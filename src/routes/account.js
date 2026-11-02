@@ -25,6 +25,8 @@ import {
 const router = Router();
 router.use(requireUser);
 
+const ASSETS = ["ETH", "USDT"];
+
 function usernameCandidate(displayName, email) {
   const seed =
     (displayName || email?.split("@")[0] || "cryptowise")
@@ -464,6 +466,111 @@ router.post("/withdrawal-requests", async (req, res, next) => {
       message:
         "Request reserved for administrator review. No on-chain transfer is performed by this API.",
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const supportedCurrencies = [
+  "USD",
+  "EUR",
+  "GBP",
+  "CAD",
+  "AUD",
+  "NZD",
+  "JPY",
+  "INR",
+  "NGN",
+  "GHS",
+  "ZAR",
+  "KES",
+];
+
+const preferencesSchema = z
+  .object({
+    displayCurrency: z.enum(supportedCurrencies).optional(),
+    timeZone: z.string().min(1).max(64).optional(),
+    notifications: z
+      .object({
+        email: z.boolean().optional(),
+        product: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "At least one preference is required.",
+  });
+
+router.get("/preferences", async (req, res, next) => {
+  try {
+    const snapshot = await db.collection("users").doc(req.user.uid).get();
+    const saved = snapshot.exists ? snapshot.data().preferences || {} : {};
+
+    res.set("Cache-Control", "private, no-store").json({
+      preferences: {
+        displayCurrency: saved.displayCurrency || "USD",
+        timeZone: saved.timeZone || "UTC",
+        notifications: {
+          email: saved.notifications?.email ?? true,
+          product: saved.notifications?.product ?? true,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/preferences", async (req, res, next) => {
+  try {
+    const parsed = preferencesSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid preferences." });
+    }
+
+    if (parsed.data.timeZone) {
+      try {
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: parsed.data.timeZone,
+        }).format();
+      } catch {
+        return res.status(400).json({ error: "Invalid time zone." });
+      }
+    }
+
+    const ref = db.collection("users").doc(req.user.uid);
+
+    const preferences = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const user = snapshot.exists ? snapshot.data() : {};
+      const current = user.preferences || {};
+
+      const next = {
+        ...current,
+        ...parsed.data,
+        notifications: {
+          ...(current.notifications || {}),
+          ...(parsed.data.notifications || {}),
+        },
+      };
+
+      transaction.set(
+        ref,
+        {
+          uid: req.user.uid,
+          preferences: next,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return next;
+    });
+
+    return res.set("Cache-Control", "private, no-store").json({ preferences });
   } catch (error) {
     next(error);
   }
