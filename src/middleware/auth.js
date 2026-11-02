@@ -3,43 +3,43 @@ import { auth } from '../firebase.js';
 import { config } from '../config.js';
 import { isAuthorizedAdminClaims } from '../services/admin-claims.js';
 
-export async function requireUser(req, res, next) {
+export async function requireUser(request, reply) {
   try {
-    const header = req.get('authorization') || '';
+    const header = request.headers['authorization'] || '';
     const match = /^Bearer ([A-Za-z0-9._~-]+)$/.exec(header);
-    if (!match) return res.status(401).json({ error: 'Authentication required.' });
+    if (!match) {
+      return reply.status(401).send({ error: 'Authentication required.' });
+    }
 
-    req.user = await auth.verifyIdToken(match[1], true);
-    if (req.user.email && req.user.email_verified !== true) {
-      return res.status(403).json({ error: 'Verify your email before using CryptoWise.' });
+    request.user = await auth.verifyIdToken(match[1], true);
+    if (request.user.email && request.user.email_verified !== true) {
+      return reply.status(403).send({ error: 'Verify your email before using CryptoWise.' });
     }
 
     if (config.appCheckRequired) {
-      const appCheck = req.get('x-firebase-appcheck');
-      if (!appCheck) return res.status(401).json({ error: 'App attestation required.' });
+      const appCheck = request.headers['x-firebase-appcheck'];
+      if (!appCheck) {
+        return reply.status(401).send({ error: 'App attestation required.' });
+      }
       await getAppCheck().verifyToken(appCheck);
     }
-
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired authentication token.' });
+  } catch (error) {
+    return reply.status(401).send({ error: 'Invalid or expired authentication token.' });
   }
 }
 
-export function requireAdmin(req, res, next) {
-  const role = req.user?.role;
-  if (!isAuthorizedAdminClaims(req.user)) {
-    return res.status(403).json({ error: 'Administrator access required.' });
+export async function requireAdmin(request, reply) {
+  const role = request.user?.role;
+  if (!isAuthorizedAdminClaims(request.user)) {
+    return reply.status(403).send({ error: 'Administrator access required.' });
   }
-  req.adminRole = role;
-  next();
+  request.adminRole = role;
 }
 
 export function requireRole(...roles) {
-  return (req, res, next) => {
-    if (!roles.includes(req.adminRole)) {
-      return res.status(403).json({ error: 'Insufficient permissions.' });
+  return async (request, reply) => {
+    if (!roles.includes(request.adminRole)) {
+      return reply.status(403).send({ error: 'Insufficient permissions.' });
     }
-    next();
   };
 }

@@ -7,6 +7,7 @@ import { config } from './config.js';
 import accountRoutes from './routes/account.js';
 import adminRoutes from './routes/admin.js';
 import tradeRoutes from './routes/trade.js';
+import paymentRoutes from './routes/payment.js'; // 1. Import payment routes
 import { DEPOSIT_AUTOMATIC_CREDIT_READY, DEPOSIT_CHAIN_VERIFICATION_READY, DEPOSIT_CUSTOMER_INTAKE_READY } from './services/deposit-readiness.js';
 
 export const app = express();
@@ -29,7 +30,8 @@ app.get('/health', (_req,res)=>res.status(200).json({ status:'ok', service:'cryp
 
 app.use('/v1', accountRoutes);
 app.use('/v1/admin', adminRoutes);
-app.use('/v1', tradeRoutes); // Trade endpoints will now be accessible under /v1 (e.g. /v1/trade)
+app.use('/v1', tradeRoutes); 
+app.use('/v1', paymentRoutes); // 2. Mount payment endpoints under /v1 (e.g. /v1/wallet/generate)
 
 app.use((_req,res)=>res.status(404).json({error:'Not found.'}));
 app.use((err,req,res,_next)=>{
