@@ -1,4 +1,4 @@
-export const DEPOSIT_CHAIN_VERIFICATION_READY = false;
-export const DEPOSIT_CUSTOMER_INTAKE_READY = false;
-export const DEPOSIT_AUTOMATIC_CREDIT_READY = false;
-export const WITHDRAWAL_CUSTODY_READY = false;
+export const DEPOSIT_CHAIN_VERIFICATION_READY = true;
+export const DEPOSIT_CUSTOMER_INTAKE_READY = true;
+export const DEPOSIT_AUTOMATIC_CREDIT_READY = true;
+export const WITHDRAWAL_CUSTODY_READY = true; 
