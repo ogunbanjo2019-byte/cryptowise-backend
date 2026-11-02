@@ -20,30 +20,36 @@ import {
 const router = Router();
 router.use(requireUser);
 
-const ASSETS = ['ETH', 'USDT'];
-
 router.get('/me', async (req, res, next) => {
   try {
     const ref = db.collection('users').doc(req.user.uid);
     const snap = await ref.get();
+    const stored = snap.exists ? snap.data() : {};
 
-    if (!snap.exists) {
+    const email = req.user.email || stored.email || null;
+    const displayName = req.user.name || stored.displayName || null;
+
+    if (
+      !snap.exists ||
+      (!stored.displayName && displayName) ||
+      (!stored.email && email)
+    ) {
       await ref.set({
         uid: req.user.uid,
-        email: req.user.email || null,
-        displayName: req.user.name || null,
-        kycStatus: 'not_started',
-        createdAt: FieldValue.serverTimestamp(),
+        email,
+        displayName,
+        kycStatus: stored.kycStatus || 'not_started',
+        ...(snap.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
 
     res.json({
       uid: req.user.uid,
-      email: req.user.email || null,
-      displayName: req.user.name || null,
+      email,
+      displayName,
       role: req.user.role || 'customer',
-      kycStatus: snap.exists ? snap.data().kycStatus : 'not_started',
+      kycStatus: stored.kycStatus || 'not_started',
     });
   } catch (error) {
     next(error);
@@ -55,23 +61,28 @@ router.get('/export', async (req, res, next) => {
     const uid = req.user.uid;
     const userRef = db.collection('users').doc(uid);
 
-    const [userSnap, accountSnap, ledgerSnap, depositsSnap, withdrawalsSnap] =
-      await Promise.all([
-        userRef.get(),
-        accountRef(uid).get(),
-        userRef.collection('ledger')
-          .orderBy('createdAt', 'desc')
-          .limit(MAX_ROWS_PER_COLLECTION)
-          .get(),
-        db.collection('depositRequests')
-          .where('uid', '==', uid)
-          .limit(MAX_ROWS_PER_COLLECTION)
-          .get(),
-        db.collection('withdrawalRequests')
-          .where('uid', '==', uid)
-          .limit(MAX_ROWS_PER_COLLECTION)
-          .get(),
-      ]);
+    const [
+      userSnap,
+      accountSnap,
+      ledgerSnap,
+      depositsSnap,
+      withdrawalsSnap,
+    ] = await Promise.all([
+      userRef.get(),
+      accountRef(uid).get(),
+      userRef.collection('ledger')
+        .orderBy('createdAt', 'desc')
+        .limit(MAX_ROWS_PER_COLLECTION)
+        .get(),
+      db.collection('depositRequests')
+        .where('uid', '==', uid)
+        .limit(MAX_ROWS_PER_COLLECTION)
+        .get(),
+      db.collection('withdrawalRequests')
+        .where('uid', '==', uid)
+        .limit(MAX_ROWS_PER_COLLECTION)
+        .get(),
+    ]);
 
     const user = userSnap.exists ? userSnap.data() : {};
     const account = accountSnap.exists ? accountSnap.data() : {};
@@ -188,7 +199,9 @@ router.get('/deposit-instructions', (_req, res) => {
       },
     ],
     verification: {
-      status: DEPOSIT_CHAIN_VERIFICATION_READY ? 'ready' : 'not_implemented',
+      status: DEPOSIT_CHAIN_VERIFICATION_READY
+        ? 'ready'
+        : 'not_implemented',
       automaticCrediting: DEPOSIT_AUTOMATIC_CREDIT_READY,
       reconciliation: false,
     },
@@ -210,6 +223,7 @@ router.get('/deposit-requests', async (req, res, next) => {
 
     const requests = snap.docs.map((doc) => {
       const data = doc.data();
+
       return {
         id: doc.id,
         asset: data.asset || null,
@@ -262,6 +276,7 @@ router.post('/deposit-requests', async (req, res, next) => {
 
     await db.runTransaction(async (transaction) => {
       const existing = await transaction.get(hashRef);
+
       if (existing.exists) {
         throw Object.assign(
           new Error('Transaction hash has already been submitted.'),
@@ -316,11 +331,16 @@ router.post('/withdrawal-requests', async (req, res, next) => {
     }
 
     const values = parsed.data;
-    if (!validEvmAddress(values.destination) || !validAtomic(values.amountAtomic)) {
+
+    if (
+      !validEvmAddress(values.destination) ||
+      !validAtomic(values.amountAtomic)
+    ) {
       return res.status(400).json({ error: 'Invalid amount or destination.' });
     }
 
     const ref = db.collection('withdrawalRequests').doc();
+
     await reserveWithdrawal({
       uid: req.user.uid,
       withdrawalRef: ref,
@@ -359,20 +379,24 @@ router.get('/notifications', async (req, res, next) => {
 
 router.patch('/notifications/:id/read', async (req, res, next) => {
   try {
-    const id = z.string()
+    const parsedId = z.string()
       .regex(/^[A-Za-z0-9_-]{1,128}$/)
       .safeParse(req.params.id);
 
-    if (!id.success) {
+    if (!parsedId.success) {
       return res.status(400).json({ error: 'Invalid notification id.' });
     }
 
     const ref = db.collection('users')
       .doc(req.user.uid)
       .collection('notifications')
-      .doc(id.data);
+      .doc(parsedId.data);
 
-    await ref.set({ readAt: FieldValue.serverTimestamp() }, { merge: true });
+    await ref.set(
+      { readAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+
     res.status(204).end();
   } catch (error) {
     next(error);
