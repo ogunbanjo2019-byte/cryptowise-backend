@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: cryptowise-api
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FIREBASE_APP_CHECK_REQUIRED
+        value: "false"
+      - key: LIVE_FUNDS_ENABLED
+        value: "false"
+      - key: TRADING_ENABLED
+        value: "false"
+      - key: CHAIN_MODE
+        value: testnet
+      - key: ETH_DEPOSIT_ADDRESS
+        sync: false
+      - key: USDT_DEPOSIT_ADDRESS
+        sync: false
