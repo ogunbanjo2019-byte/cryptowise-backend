@@ -37,6 +37,10 @@ function usernameCandidate(displayName, email) {
   return `${seed}${randomInt(1000, 10000)}`;
 }
 
+function customerNumberCandidate() {
+  return String(randomInt(1_000_000_000, 10_000_000_000));
+}
+
 router.get("/me", async (req, res, next) => {
   try {
     const uid = req.user.uid;
@@ -45,10 +49,9 @@ router.get("/me", async (req, res, next) => {
     const displayName = req.user.name || null;
     let profile = null;
 
-    // Save the username and its reservation in one transaction to avoid
-    // assigning the same username to two users at the same time.
     for (let attempt = 0; attempt < 10 && !profile; attempt += 1) {
-      const candidate = usernameCandidate(displayName, email);
+      const candidateUsername = usernameCandidate(displayName, email);
+      const candidateCustomerNumber = customerNumberCandidate();
 
       profile = await db.runTransaction(async (transaction) => {
         const snap = await transaction.get(ref);
@@ -56,42 +59,52 @@ router.get("/me", async (req, res, next) => {
 
         const finalEmail = email || stored.email || null;
         const finalDisplayName = displayName || stored.displayName || null;
+        const username = stored.username || candidateUsername;
+        const customerNumber =
+          stored.customerNumber || candidateCustomerNumber;
 
-        // Keep the user's existing username on later profile loads.
-        if (stored.username) {
-          transaction.set(
-            ref,
-            {
-              uid,
-              email: finalEmail,
-              displayName: finalDisplayName,
-              kycStatus: stored.kycStatus || "not_started",
-              ...(snap.exists
-                ? {}
-                : { createdAt: FieldValue.serverTimestamp() }),
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true },
-          );
+        const usernameRef = db.collection("usernames").doc(username);
+        const numberRef = db
+          .collection("customerNumbers")
+          .doc(customerNumber);
 
-          return {
-            email: finalEmail,
-            displayName: finalDisplayName,
-            username: stored.username,
-            kycStatus: stored.kycStatus || "not_started",
-          };
+        // Read both reservations before making any transaction writes.
+        const usernameSnap = await transaction.get(usernameRef);
+        const numberSnap = await transaction.get(numberRef);
+
+        if (usernameSnap.exists && usernameSnap.data().uid !== uid) {
+          if (stored.username) {
+            throw Object.assign(
+              new Error("Stored username is already reserved."),
+              { statusCode: 409 },
+            );
+          }
+          return null;
         }
 
-        const usernameRef = db.collection("usernames").doc(candidate);
-        const usernameSnap = await transaction.get(usernameRef);
+        if (numberSnap.exists && numberSnap.data().uid !== uid) {
+          if (stored.customerNumber) {
+            throw Object.assign(
+              new Error("Stored customer number is already reserved."),
+              { statusCode: 409 },
+            );
+          }
+          return null;
+        }
 
-        // Retry with a different candidate if this username is reserved.
-        if (usernameSnap.exists) return null;
+        if (!usernameSnap.exists) {
+          transaction.create(usernameRef, {
+            uid,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
 
-        transaction.create(usernameRef, {
-          uid,
-          createdAt: FieldValue.serverTimestamp(),
-        });
+        if (!numberSnap.exists) {
+          transaction.create(numberRef, {
+            uid,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
 
         transaction.set(
           ref,
@@ -99,7 +112,8 @@ router.get("/me", async (req, res, next) => {
             uid,
             email: finalEmail,
             displayName: finalDisplayName,
-            username: candidate,
+            username,
+            customerNumber,
             kycStatus: stored.kycStatus || "not_started",
             ...(snap.exists
               ? {}
@@ -112,7 +126,8 @@ router.get("/me", async (req, res, next) => {
         return {
           email: finalEmail,
           displayName: finalDisplayName,
-          username: candidate,
+          username,
+          customerNumber,
           kycStatus: stored.kycStatus || "not_started",
         };
       });
@@ -120,7 +135,8 @@ router.get("/me", async (req, res, next) => {
 
     if (!profile) {
       return res.status(503).json({
-        error: "Could not allocate a username. Please retry shortly.",
+        error:
+          "Could not allocate a unique username and customer number. Please retry shortly.",
       });
     }
 
@@ -129,6 +145,7 @@ router.get("/me", async (req, res, next) => {
       email: profile.email,
       displayName: profile.displayName,
       username: profile.username,
+      customerNumber: profile.customerNumber,
       role: req.user.role || "customer",
       kycStatus: profile.kycStatus,
     });
@@ -172,6 +189,7 @@ router.get("/export", async (req, res, next) => {
         email: req.user.email || user.email || null,
         displayName: req.user.name || user.displayName || null,
         username: user.username || null,
+        customerNumber: user.customerNumber || null,
         kycStatus: user.kycStatus || "not_started",
       },
       account,

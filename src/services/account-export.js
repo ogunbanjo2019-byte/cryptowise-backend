@@ -15,6 +15,7 @@ const SAFE_CSV_HEADERS = [
   "email",
   "displayName",
   "username",
+  "customerNumber",
   "kycStatus",
   "availableAtomic",
   "reservedAtomic",
@@ -52,7 +53,7 @@ function row(recordType, id, data = {}) {
 function csvCell(value) {
   let text = String(value ?? "");
 
-  // Protect spreadsheet users from formula injection.
+  // Prevent spreadsheet formula injection, including after whitespace prefixes.
   if (/^[\s\u0000-\u001f]*[=+@-]/.test(text)) {
     text = `'${text}`;
   }
@@ -81,6 +82,7 @@ export function createAccountExport({
       email: profile.email,
       displayName: profile.displayName,
       username: profile.username,
+      customerNumber: profile.customerNumber,
       kycStatus: profile.kycStatus,
     }),
     row("wallet", uid, {
@@ -139,4 +141,3 @@ export function createAccountExport({
 }
 
 export { MAX_ROWS_PER_COLLECTION };
-n
