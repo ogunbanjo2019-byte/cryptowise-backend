@@ -1,7 +1,8 @@
-import { ethers } from "ethers";
+import { ethers } from 'ethers';
+import { config } from '../config.js';
 
 // Initialize provider
-const provider = new ethers.JsonRpcProvider(process.env.ETHEREUM_RPC_URL);
+const provider = new ethers.JsonRpcProvider(config.RPC_URL);
 
 // USDT Contract Address on Ethereum Mainnet 
 const USDT_ADDRESS = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
@@ -14,17 +15,6 @@ const ERC20_ABI = [
 ];
 
 const usdtContract = new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider);
-
-/**
- * Generate a new crypto deposit wallet for a user
- */
-export function generateWallet() {
-  const wallet = ethers.Wallet.createRandom();
-  return {
-    address: wallet.address,
-    privateKey: wallet.privateKey, 
-  };
-}
 
 /**
  * Check ETH balance of an address
