@@ -15,6 +15,13 @@ const schema = z.object({
   ETH_DEPOSIT_ADDRESS: z.string().default(''),
   USDT_DEPOSIT_ADDRESS: z.string().default(''),
   SUPPORT_EMAIL: z.string().email().default('support@example.invalid'),
+  BYBIT_ENV: z.enum(['testnet','demo','mainnet']).default('testnet'),
+  BYBIT_API_KEY: z.string().default(''),
+  BYBIT_API_SECRET: z.string().default(''),
+  BYBIT_CONNECTOR_ENABLED: z.enum(['true','false']).default('false'),
+  BYBIT_CATEGORY: z.enum(['spot']).default('spot'),
+  BYBIT_SYMBOL: z.string().regex(/^[A-Z0-9]{5,20}$/).default('ETHUSDT'),
+  BYBIT_OPERATOR_UID: z.string().default(''),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -29,6 +36,7 @@ export const config = {
   appCheckRequired: parsed.data.FIREBASE_APP_CHECK_REQUIRED === 'true',
   liveFundsEnabled: parsed.data.LIVE_FUNDS_ENABLED === 'true',
   tradingEnabled: parsed.data.TRADING_ENABLED === 'true',
+  bybitConnectorEnabled: parsed.data.BYBIT_CONNECTOR_ENABLED === 'true',
 };
 
 if (config.liveFundsEnabled && config.CHAIN_MODE !== 'mainnet') {
