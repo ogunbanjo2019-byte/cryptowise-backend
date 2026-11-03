@@ -9,7 +9,31 @@ import { validEvmAddress, validTxHash } from '../services/validation.js';
 const router = Router();
 const NETWORK = config.CHAIN_MODE === 'mainnet' ? 'ethereum' : 'ethereum-testnet';
 function serialize(value) { if (!value) return null; if (typeof value.toDate === 'function') return value.toDate().toISOString(); if (typeof value.toMillis === 'function') return new Date(value.toMillis()).toISOString(); return value; }
-async function ensureProfile(uid, token) { const ref = db.collection('users').doc(uid); const snap = await ref.get(); if (snap.exists) return snap.data(); const data = { uid, email: token.email || null, displayName: token.name || null, kycStatus: 'not_started', createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }; await ref.set(data, { merge: true }); return data; }
+function generatedIdentity(uid, token) {
+  const emailName = String(token.email || token.name || 'user').split('@')[0].toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 12) || 'user';
+  const uidPart = String(uid).replace(/[^a-zA-Z0-9]/g, '').slice(-8).toLowerCase();
+  return { username: `cw_${emailName}_${uidPart}`, customerNumber: `CW-${String(uid).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toUpperCase()}` };
+}
+async function ensureProfile(uid, token) {
+  const ref = db.collection('users').doc(uid);
+  const identity = generatedIdentity(uid, token);
+  return db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const existing = snap.exists ? snap.data() : {};
+    const data = {
+      uid,
+      email: token.email || existing.email || null,
+      displayName: token.name || existing.displayName || null,
+      username: existing.username || identity.username,
+      customerNumber: existing.customerNumber || identity.customerNumber,
+      kycStatus: existing.kycStatus || 'not_started',
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (!snap.exists) data.createdAt = FieldValue.serverTimestamp();
+    if (!snap.exists || !existing.username || !existing.customerNumber) transaction.set(ref, data, { merge: true });
+    return { ...existing, ...data };
+  });
+}
 
 router.get('/me', requireUser, async (req, res, next) => { try { const data = await ensureProfile(req.user.uid, req.user); res.json({ uid: req.user.uid, email: req.user.email || data.email || null, displayName: req.user.name || data.displayName || null, username: data.username || null, customerNumber: data.customerNumber || null, kycStatus: data.kycStatus || 'not_started' }); } catch (error) { next(error); } });
 router.get('/wallet', requireUser, async (req, res, next) => { try { const snap = await accountRef(req.user.uid).get(); const data = snap.exists ? snap.data() : {}; const ledgerSnap = await db.collection('users').doc(req.user.uid).collection('ledger').orderBy('createdAt', 'desc').limit(50).get(); res.json({ uid: req.user.uid, availableAtomic: { ...zeroBalances(), ...(data.availableAtomic || {}) }, reservedAtomic: { ...zeroBalances(), ...(data.reservedAtomic || {}) }, transactions: ledgerSnap.docs.map((doc) => ({ id: doc.id, ...doc.data(), createdAt: serialize(doc.data().createdAt) })) }); } catch (error) { next(error); } });
