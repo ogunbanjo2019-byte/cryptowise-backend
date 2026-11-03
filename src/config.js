@@ -11,6 +11,7 @@ const schema = z.object({
   LIVE_FUNDS_ENABLED: z.enum(['true','false']).default('false'),
   TRADING_ENABLED: z.enum(['true','false']).default('false'),
   CHAIN_MODE: z.enum(['testnet','mainnet']).default('testnet'),
+  RPC_URL: z.string().url().default('https://eth-mainnet.g.alchemy.com/v2/'), // <-- Add this line
   ETH_DEPOSIT_ADDRESS: z.string().default(''),
   USDT_DEPOSIT_ADDRESS: z.string().default(''),
   SUPPORT_EMAIL: z.string().email().default('support@example.invalid'),
