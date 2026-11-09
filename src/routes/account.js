@@ -191,11 +191,22 @@ router.get('/deposit-requests', requireUser, async (req, res, next) => {
       .limit(100)
       .get();
 
+    res.set('Cache-Control', 'no-store');
     res.json({
-      requests: snap.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })),
+      requests: snap.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          asset: data.asset || null,
+          txHash: data.txHash || null,
+          status: data.status || 'pending_manual_review',
+          confirmations: Number.isInteger(data.confirmations)
+            ? data.confirmations
+            : null,
+          createdAt: serialize(data.createdAt),
+          updatedAt: serialize(data.updatedAt),
+        };
+      }),
     });
   } catch (error) {
     next(error);
