@@ -11,9 +11,14 @@ const schema = z.object({
   LIVE_FUNDS_ENABLED: z.enum(['true','false']).default('false'),
   TRADING_ENABLED: z.enum(['true','false']).default('false'),
   CHAIN_MODE: z.enum(['testnet','mainnet']).default('testnet'),
+  ETH_CHAIN_ID: z.coerce.number().int().positive().optional(),
   RPC_URL: z.string().url().default('https://eth-mainnet.g.alchemy.com/v2/'), // <-- Add this line
   ETH_DEPOSIT_ADDRESS: z.string().default(''),
   USDT_DEPOSIT_ADDRESS: z.string().default(''),
+  USDT_TOKEN_CONTRACT: z.string().default(''),
+  DEPOSIT_MONITOR_ENABLED: z.enum(['true','false']).default('false'),
+  DEPOSIT_MONITOR_INTERVAL_MS: z.coerce.number().int().min(5000).max(300000).default(15000),
+  DEPOSIT_CONFIRMATIONS_REQUIRED: z.coerce.number().int().min(1).max(10000).default(12),
   SUPPORT_EMAIL: z.string().email().default('support@example.invalid'),
   BYBIT_ENV: z.enum(['testnet','demo','mainnet']).default('testnet'),
   BYBIT_API_KEY: z.string().default(''),
@@ -32,12 +37,27 @@ if (!parsed.success) {
 
 export const config = {
   ...parsed.data,
+  ETH_CHAIN_ID: parsed.data.ETH_CHAIN_ID ?? (parsed.data.CHAIN_MODE === 'mainnet' ? 1 : 11155111),
   corsOrigins: parsed.data.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean),
   appCheckRequired: parsed.data.FIREBASE_APP_CHECK_REQUIRED === 'true',
   liveFundsEnabled: parsed.data.LIVE_FUNDS_ENABLED === 'true',
   tradingEnabled: parsed.data.TRADING_ENABLED === 'true',
   bybitConnectorEnabled: parsed.data.BYBIT_CONNECTOR_ENABLED === 'true',
+  depositMonitorEnabled: parsed.data.DEPOSIT_MONITOR_ENABLED === 'true',
 };
+
+if (config.CHAIN_MODE === 'mainnet' && config.ETH_CHAIN_ID !== 1) {
+  throw new Error('Ethereum mainnet monitoring requires ETH_CHAIN_ID=1.');
+}
+if (config.CHAIN_MODE === 'testnet' && config.ETH_CHAIN_ID !== 11155111) {
+  throw new Error('This monitor currently supports Sepolia testnet only (ETH_CHAIN_ID=11155111).');
+}
+if (config.ETH_CHAIN_ID === 1 && config.USDT_TOKEN_CONTRACT && config.USDT_TOKEN_CONTRACT.toLowerCase() !== '0xdac17f958d2ee523a2206206994597c13d831ec7') {
+  throw new Error('Ethereum mainnet USDT_TOKEN_CONTRACT must be the official USDT contract.');
+}
+if (config.depositMonitorEnabled && ![config.ETH_DEPOSIT_ADDRESS, config.USDT_DEPOSIT_ADDRESS].every(a => /^0x[a-fA-F0-9]{40}$/.test(a))) {
+  throw new Error('DEPOSIT_MONITOR_ENABLED requires both verified public receiving addresses.');
+}
 
 if (config.liveFundsEnabled && config.CHAIN_MODE !== 'mainnet') {
   throw new Error('LIVE_FUNDS_ENABLED requires explicit mainnet configuration; keep it false for MVP testing.');
