@@ -25,6 +25,7 @@ import {
 const router = Router();
 const NETWORK =
   config.CHAIN_MODE === 'mainnet' ? 'ethereum' : 'ethereum-testnet';
+const OFFICIAL_MAINNET_USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
 
 function serialize(value) {
   if (!value) return null;
@@ -157,25 +158,29 @@ router.get('/wallet', requireUser, async (req, res, next) => {
 });
 
 router.get('/deposit-instructions', requireUser, (_req, res) => {
+  const tokenContract = config.USDT_TOKEN_CONTRACT ||
+    (config.ETH_CHAIN_ID === 1 ? OFFICIAL_MAINNET_USDT : '');
   const addresses = [
-    { asset: 'ETH', address: config.ETH_DEPOSIT_ADDRESS },
-    {
-      asset: 'USDT',
-      address: config.USDT_DEPOSIT_ADDRESS,
-      tokenContract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-    },
-  ].filter((item) => validEvmAddress(item.address));
+    ...(validEvmAddress(config.ETH_DEPOSIT_ADDRESS)
+      ? [{ asset: 'ETH', address: config.ETH_DEPOSIT_ADDRESS }]
+      : []),
+    ...(validEvmAddress(config.USDT_DEPOSIT_ADDRESS) && validEvmAddress(tokenContract)
+      ? [{ asset: 'USDT', address: config.USDT_DEPOSIT_ADDRESS, tokenContract }]
+      : []),
+  ];
 
   const enabled =
     config.liveFundsEnabled &&
     DEPOSIT_CUSTOMER_INTAKE_READY &&
     DEPOSIT_CHAIN_VERIFICATION_READY &&
     DEPOSIT_AUTOMATIC_CREDIT_READY &&
-    addresses.length === 2;
+    addresses.some((item) => item.asset === 'ETH') &&
+    addresses.some((item) => item.asset === 'USDT');
 
   res.json({
     enabled,
     network: NETWORK,
+    chainId: config.ETH_CHAIN_ID,
     notice: enabled
       ? 'Only use the active address shown here and the exact network.'
       : 'Receiving addresses may be configured below, but CryptoWise deposits are paused. Transfers will not be automatically detected or credited. Do not send funds until the service announces deposits are open.',
