@@ -3,6 +3,8 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { db } from '../firebase.js';
 import { config } from '../config.js';
 import { verifyDepositRequest } from './deposit-verifier.js';
+import { deriveDepositAddressFromXpub } from './xpub-derivation.js';
+import { creditConfirmedTestnetDeposit } from './ledger.js';
 
 const WATCHED_STATUSES = ['pending_manual_review', 'detected', 'confirming', 'confirmed', 'reorged'];
 let provider;
@@ -19,6 +21,8 @@ async function scanPendingDepositRequests() {
       .get();
     const requests = snapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }));
 
+    // A submitted hash cannot safely identify a customer when multiple requests claim it.
+    // These are flagged for review; no ledger writes are performed by this monitor.
     const byHash = new Map();
     for (const request of requests) {
       const key = String(request.txHash || '').toLowerCase();
@@ -40,18 +44,30 @@ async function scanPendingDepositRequests() {
 
       const request = group[0];
       try {
+        if (config.depositAddressDerivationEnabled) {
+          const addressRef = db.collection('depositAddresses').doc(request.uid);
+          const addressSnap = await addressRef.get();
+          const saved = addressSnap.exists ? addressSnap.data() : null;
+          const derived = saved && Number.isInteger(saved.index)
+            ? deriveDepositAddressFromXpub(config.DEPOSIT_XPUB, saved.index)
+            : null;
+          if (!saved || typeof saved.address !== 'string' || !Number.isInteger(saved.index) ||
+              saved.index !== request.depositAddressIndex ||
+              saved.chainId !== config.ETH_CHAIN_ID || !request.depositAddress ||
+              saved.address.toLowerCase() !== request.depositAddress.toLowerCase() ||
+              derived?.toLowerCase() !== saved.address.toLowerCase()) {
+            await request.ref.update({
+              status: 'manual_review',
+              statusReason: 'Deposit request address does not match the signed-in customer’s derived address.',
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+            continue;
+          }
+        }
         const verification = await verifyDepositRequest(request, provider, config);
         const current = String(request.status || '');
-        if (current === verification.status && current !== 'confirming') continue;
-
-        const isNowConfirmed = verification.status === 'confirmed' && current !== 'confirmed';
-
-        await db.runTransaction(async (transaction) => {
-          const docRef = request.ref;
-          const docSnap = await transaction.get(docRef);
-          if (!docSnap.exists) return;
-
-          const updateData = {
+        if (current !== verification.status || current === 'confirming') {
+          await request.ref.update({
             status: verification.status,
             confirmations: verification.confirmations ?? 0,
             chainId: verification.chainId ?? config.ETH_CHAIN_ID,
@@ -61,28 +77,13 @@ async function scanPendingDepositRequests() {
             statusReason: verification.reason ?? null,
             verifiedAt: verification.status === 'confirmed' ? FieldValue.serverTimestamp() : null,
             updatedAt: FieldValue.serverTimestamp(),
-          };
-
-          if (isNowConfirmed && !docSnap.data().ledgerCredited) {
-            const userId = docSnap.data().userId;
-            const amount = Number(verification.observedAmountAtomic || docSnap.data().amount || 0);
-
-            if (userId && amount > 0) {
-              const userRef = db.collection('users').doc(userId);
-              
-              transaction.set(userRef, {
-                balance: FieldValue.increment(amount)
-              }, { merge: true });
-
-              updateData.ledgerCredited = true;
-              console.log(`Successfully credited user ${userId} with amount ${amount} for deposit ${request.id}`);
-            }
-          }
-
-          transaction.update(docRef, updateData);
-        });
-
+          });
+        }
+        if (verification.status === 'confirmed' && config.depositTestnetAutoCreditEnabled) {
+          await creditConfirmedTestnetDeposit({ depositRef: request.ref });
+        }
       } catch (error) {
+        // Provider failures are retried on the next scan and never mark a request confirmed.
         console.error(`Deposit monitor lookup failed for request ${request.id}:`, error.message);
       }
     }
@@ -101,8 +102,11 @@ export async function startDepositMonitor() {
   if (![1, 11155111].includes(config.ETH_CHAIN_ID)) {
     throw new Error('Deposit monitor supports Ethereum mainnet or Sepolia only.');
   }
-  if (![config.ETH_DEPOSIT_ADDRESS, config.USDT_DEPOSIT_ADDRESS].every(ethers.isAddress)) {
+  if (!config.depositAddressDerivationEnabled && ![config.ETH_DEPOSIT_ADDRESS, config.USDT_DEPOSIT_ADDRESS].every(ethers.isAddress)) {
     throw new Error('Deposit monitor requires verified public ETH and USDT receiving addresses.');
+  }
+  if (config.depositAddressDerivationEnabled) {
+    deriveDepositAddressFromXpub(config.DEPOSIT_XPUB, 0);
   }
 
   provider = new ethers.JsonRpcProvider(config.RPC_URL, config.ETH_CHAIN_ID, { staticNetwork: true });
@@ -114,7 +118,7 @@ export async function startDepositMonitor() {
     console.warn('USDT requests will remain in manual review until a verified test-network token contract is configured.');
   }
 
-  console.log(`Active ledger-crediting deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations.`);
+  console.log(`Deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations. ${config.depositTestnetAutoCreditEnabled ? 'Sepolia test-ledger credits enabled.' : 'Automatic ledger credits are disabled.'}`);
   await scanPendingDepositRequests();
   timer = setInterval(scanPendingDepositRequests, config.DEPOSIT_MONITOR_INTERVAL_MS);
   timer.unref?.();

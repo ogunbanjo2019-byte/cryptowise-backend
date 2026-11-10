@@ -14,10 +14,11 @@ export async function verifyDepositRequest(request, chainProvider, settings) {
     return result('manual_review', { reason: 'Invalid asset or transaction hash.' });
   }
   const expectedNetwork = settings.ETH_CHAIN_ID === 1 ? 'ethereum' : 'ethereum-testnet';
-  if (request.network !== expectedNetwork) {
+  if (request.network !== expectedNetwork || (request.chainId != null && Number(request.chainId) !== settings.ETH_CHAIN_ID)) {
     return result('manual_review', { reason: 'Deposit request network does not match the configured chain.' });
   }
-  const recipient = asset === 'ETH' ? settings.ETH_DEPOSIT_ADDRESS : settings.USDT_DEPOSIT_ADDRESS;
+  const recipient = request.depositAddress ||
+    (asset === 'ETH' ? settings.ETH_DEPOSIT_ADDRESS : settings.USDT_DEPOSIT_ADDRESS);
   if (!ethers.isAddress(recipient)) {
     return result('manual_review', { reason: `No valid configured ${asset} receiving address.` });
   }

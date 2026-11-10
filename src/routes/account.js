@@ -12,10 +12,12 @@ import {
   validEvmAddress,
   validTxHash,
 } from '../services/validation.js';
+import { getOrCreateDepositAddress } from '../services/deposit-addresses.js';
 import {
   DEPOSIT_AUTOMATIC_CREDIT_READY,
   DEPOSIT_CHAIN_VERIFICATION_READY,
   DEPOSIT_CUSTOMER_INTAKE_READY,
+  WITHDRAWAL_CUSTODY_READY,
 } from '../services/deposit-readiness.js';
 import {
   demoAccountRef,
@@ -157,35 +159,53 @@ router.get('/wallet', requireUser, async (req, res, next) => {
   }
 });
 
-router.get('/deposit-instructions', requireUser, (_req, res) => {
-  const tokenContract = config.USDT_TOKEN_CONTRACT ||
-    (config.ETH_CHAIN_ID === 1 ? OFFICIAL_MAINNET_USDT : '');
-  const addresses = [
-    ...(validEvmAddress(config.ETH_DEPOSIT_ADDRESS)
-      ? [{ asset: 'ETH', address: config.ETH_DEPOSIT_ADDRESS }]
-      : []),
-    ...(validEvmAddress(config.USDT_DEPOSIT_ADDRESS) && validEvmAddress(tokenContract)
-      ? [{ asset: 'USDT', address: config.USDT_DEPOSIT_ADDRESS, tokenContract }]
-      : []),
-  ];
+router.get('/deposit-instructions', requireUser, async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    if (config.depositTestnetIntakeEnabled) {
+      const assigned = await getOrCreateDepositAddress(req.user.uid);
+      const assets = [{ asset: 'ETH', address: assigned.address }];
+      if (validEvmAddress(config.USDT_TOKEN_CONTRACT)) {
+        assets.push({ asset: 'USDT', address: assigned.address, tokenContract: config.USDT_TOKEN_CONTRACT });
+      }
+      return res.json({
+        enabled: assets.length > 0,
+        testnet: true,
+        testCreditEnabled: config.depositTestnetAutoCreditEnabled,
+        network: assigned.network,
+        chainId: assigned.chainId,
+        notice: 'Sepolia testnet only. These test tokens have no real value. Do not send mainnet assets.',
+        assets,
+      });
+    }
 
-  const enabled =
-    config.liveFundsEnabled &&
-    DEPOSIT_CUSTOMER_INTAKE_READY &&
-    DEPOSIT_CHAIN_VERIFICATION_READY &&
-    DEPOSIT_AUTOMATIC_CREDIT_READY &&
-    addresses.some((item) => item.asset === 'ETH') &&
-    addresses.some((item) => item.asset === 'USDT');
-
-  res.json({
-    enabled,
-    network: NETWORK,
-    chainId: config.ETH_CHAIN_ID,
-    notice: enabled
-      ? 'Only use the active address shown here and the exact network.'
-      : 'Receiving addresses may be configured below, but CryptoWise deposits are paused. Transfers will not be automatically detected or credited. Do not send funds until the service announces deposits are open.',
-    assets: addresses,
-  });
+    const tokenContract = config.USDT_TOKEN_CONTRACT ||
+      (config.ETH_CHAIN_ID === 1 ? OFFICIAL_MAINNET_USDT : '');
+    const addresses = [
+      ...(validEvmAddress(config.ETH_DEPOSIT_ADDRESS)
+        ? [{ asset: 'ETH', address: config.ETH_DEPOSIT_ADDRESS }]
+        : []),
+      ...(validEvmAddress(config.USDT_DEPOSIT_ADDRESS) && validEvmAddress(tokenContract)
+        ? [{ asset: 'USDT', address: config.USDT_DEPOSIT_ADDRESS, tokenContract }]
+        : []),
+    ];
+    const enabled = config.liveFundsEnabled &&
+      DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY &&
+      DEPOSIT_AUTOMATIC_CREDIT_READY &&
+      addresses.some((item) => item.asset === 'ETH') &&
+      addresses.some((item) => item.asset === 'USDT');
+    return res.json({
+      enabled,
+      network: NETWORK,
+      chainId: config.ETH_CHAIN_ID,
+      notice: enabled
+        ? 'Only use the active address shown here and the exact network.'
+        : 'Crypto deposits are paused. Do not send funds; no live deposits will be detected or credited.',
+      assets: enabled ? addresses : [],
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.get('/deposit-requests', requireUser, async (req, res, next) => {
@@ -220,24 +240,18 @@ router.get('/deposit-requests', requireUser, async (req, res, next) => {
 
 router.post('/deposit-requests', requireUser, async (req, res, next) => {
   try {
-    if (
-      !config.liveFundsEnabled ||
-      !DEPOSIT_CUSTOMER_INTAKE_READY ||
-      !DEPOSIT_CHAIN_VERIFICATION_READY ||
-      !DEPOSIT_AUTOMATIC_CREDIT_READY
-    ) {
+    const testnetIntake = config.depositTestnetIntakeEnabled;
+    if (!testnetIntake && (!config.liveFundsEnabled || !DEPOSIT_CUSTOMER_INTAKE_READY ||
+      !DEPOSIT_CHAIN_VERIFICATION_READY || !DEPOSIT_AUTOMATIC_CREDIT_READY)) {
       return res.status(503).json({
-        error:
-          'Deposits are paused until customer intake, chain verification, ' +
-          'and duplicate-safe crediting are implemented and reviewed.',
+        error: 'Live deposits are paused until attribution, verification, crediting, and operations are independently reviewed.',
       });
     }
 
     const { asset, txHash, network } = req.body || {};
-
     if (
       !['ETH', 'USDT'].includes(asset) ||
-      network !== NETWORK ||
+      network !== (testnetIntake ? 'ethereum-testnet' : NETWORK) ||
       !validTxHash(txHash)
     ) {
       return res.status(400).json({
@@ -245,23 +259,44 @@ router.post('/deposit-requests', requireUser, async (req, res, next) => {
       });
     }
 
-    const ref = db.collection('depositRequests').doc();
+    if (testnetIntake && asset === 'USDT' && !validEvmAddress(config.USDT_TOKEN_CONTRACT)) {
+      return res.status(400).json({ error: 'USDT testnet deposits are unavailable until the Sepolia token contract is verified.' });
+    }
 
-    await ref.set({
+    const normalizedTxHash = txHash.toLowerCase();
+    const duplicate = await db.collection('depositRequests')
+      .where('txHash', '==', normalizedTxHash)
+      .limit(1)
+      .get();
+    if (!duplicate.empty) {
+      return res.status(409).json({ error: 'This transaction hash has already been submitted for tracking.' });
+    }
+
+    const assigned = testnetIntake ? await getOrCreateDepositAddress(req.user.uid) : null;
+    const ref = db.collection('depositRequests').doc();
+    const depositRequest = {
       uid: req.user.uid,
       asset,
-      txHash,
+      txHash: normalizedTxHash,
       network,
       status: 'pending_manual_review',
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-    });
+    };
+    if (assigned) {
+      depositRequest.depositAddress = assigned.address;
+      depositRequest.depositAddressIndex = assigned.index;
+      depositRequest.chainId = assigned.chainId;
+    }
+
+    await ref.set(depositRequest);
 
     res.status(201).json({
       id: ref.id,
       status: 'pending_manual_review',
-      message:
-        'Deposit submitted for protected review. A transaction hash is not proof of payment.',
+      message: testnetIntake
+        ? 'Sepolia test deposit submitted for verification. Testnet tokens have no real value and do not imply a mainnet credit.'
+        : 'Deposit submitted for protected review. A transaction hash is not proof of payment.',
     });
   } catch (error) {
     next(error);
@@ -270,11 +305,15 @@ router.post('/deposit-requests', requireUser, async (req, res, next) => {
 
 router.post('/withdrawal-requests', requireUser, async (req, res, next) => {
   try {
+    const testnetQueue = config.withdrawalsTestnetQueueEnabled;
+    if (!testnetQueue && !WITHDRAWAL_CUSTODY_READY) {
+      return res.status(503).json({ error: 'External withdrawals are paused until custody, signing, and recovery controls are reviewed.' });
+    }
     const { asset, amountAtomic, destination, network } = req.body || {};
 
     if (
       !['ETH', 'USDT'].includes(asset) ||
-      network !== NETWORK ||
+      network !== (testnetQueue ? 'ethereum-testnet' : NETWORK) ||
       !/^[1-9][0-9]{0,77}$/.test(amountAtomic) ||
       !validEvmAddress(destination)
     ) {
@@ -291,11 +330,18 @@ router.post('/withdrawal-requests', requireUser, async (req, res, next) => {
       asset,
       amountAtomic,
       destination,
+      network,
+      chainId: config.ETH_CHAIN_ID,
+      testnet: testnetQueue,
     });
 
     res.status(201).json({
       id: ref.id,
       status: 'pending_review',
+      testnet: testnetQueue,
+      message: testnetQueue
+        ? 'Sepolia test withdrawal queued and balance reserved. No blockchain transaction has been signed or sent.'
+        : 'Withdrawal request queued for protected review.',
     });
   } catch (error) {
     next(error);
