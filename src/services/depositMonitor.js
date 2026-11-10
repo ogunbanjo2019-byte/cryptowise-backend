@@ -19,8 +19,6 @@ async function scanPendingDepositRequests() {
       .get();
     const requests = snapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }));
 
-    // A submitted hash cannot safely identify a customer when multiple requests claim it.
-    // These are flagged for review; no ledger writes are performed by this monitor.
     const byHash = new Map();
     for (const request of requests) {
       const key = String(request.txHash || '').toLowerCase();
@@ -45,19 +43,46 @@ async function scanPendingDepositRequests() {
         const verification = await verifyDepositRequest(request, provider, config);
         const current = String(request.status || '');
         if (current === verification.status && current !== 'confirming') continue;
-        await request.ref.update({
-          status: verification.status,
-          confirmations: verification.confirmations ?? 0,
-          chainId: verification.chainId ?? config.ETH_CHAIN_ID,
-          blockNumber: verification.blockNumber ?? null,
-          blockHash: verification.blockHash ?? null,
-          observedAmountAtomic: verification.observedAmountAtomic ?? null,
-          statusReason: verification.reason ?? null,
-          verifiedAt: verification.status === 'confirmed' ? FieldValue.serverTimestamp() : null,
-          updatedAt: FieldValue.serverTimestamp(),
+
+        const isNowConfirmed = verification.status === 'confirmed' && current !== 'confirmed';
+
+        await db.runTransaction(async (transaction) => {
+          const docRef = request.ref;
+          const docSnap = await transaction.get(docRef);
+          if (!docSnap.exists) return;
+
+          const updateData = {
+            status: verification.status,
+            confirmations: verification.confirmations ?? 0,
+            chainId: verification.chainId ?? config.ETH_CHAIN_ID,
+            blockNumber: verification.blockNumber ?? null,
+            blockHash: verification.blockHash ?? null,
+            observedAmountAtomic: verification.observedAmountAtomic ?? null,
+            statusReason: verification.reason ?? null,
+            verifiedAt: verification.status === 'confirmed' ? FieldValue.serverTimestamp() : null,
+            updatedAt: FieldValue.serverTimestamp(),
+          };
+
+          if (isNowConfirmed && !docSnap.data().ledgerCredited) {
+            const userId = docSnap.data().userId;
+            const amount = Number(verification.observedAmountAtomic || docSnap.data().amount || 0);
+
+            if (userId && amount > 0) {
+              const userRef = db.collection('users').doc(userId);
+              
+              transaction.set(userRef, {
+                balance: FieldValue.increment(amount)
+              }, { merge: true });
+
+              updateData.ledgerCredited = true;
+              console.log(`Successfully credited user ${userId} with amount ${amount} for deposit ${request.id}`);
+            }
+          }
+
+          transaction.update(docRef, updateData);
         });
+
       } catch (error) {
-        // Provider failures are retried on the next scan and never mark a request confirmed.
         console.error(`Deposit monitor lookup failed for request ${request.id}:`, error.message);
       }
     }
@@ -89,7 +114,7 @@ export async function startDepositMonitor() {
     console.warn('USDT requests will remain in manual review until a verified test-network token contract is configured.');
   }
 
-  console.log(`Read-only deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations. No ledger credits are performed.`);
+  console.log(`Active ledger-crediting deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations.`);
   await scanPendingDepositRequests();
   timer = setInterval(scanPendingDepositRequests, config.DEPOSIT_MONITOR_INTERVAL_MS);
   timer.unref?.();
@@ -101,4 +126,3 @@ export async function stopDepositMonitor() {
   if (provider) await provider.destroy();
   provider = null;
 }
-  
