@@ -131,7 +131,7 @@ export async function creditConfirmedTestnetDeposit({ depositRef }) {
   });
 }
 
-export async function reserveWithdrawal({ uid, withdrawalRef, asset, amountAtomic, destination, network, chainId, testnet = false }) {
+export async function reserveWithdrawal({ uid, withdrawalRef, asset, amountAtomic, destination, network, chainId, testnet = false, velocityDay = null }) {
   return db.runTransaction(async tx=>{
     const reqSnap=await tx.get(withdrawalRef);
     if(reqSnap.exists) throw Object.assign(new Error('Request already exists.'),{statusCode:409});
@@ -142,9 +142,43 @@ export async function reserveWithdrawal({ uid, withdrawalRef, asset, amountAtomi
     if(balance<amount) throw Object.assign(new Error('Insufficient available balance.'),{statusCode:409});
     const ledger=userLedgerRef(uid).doc(`withdrawal_hold_${withdrawalRef.id}`);
     tx.set(account,{uid,availableAtomic:{...available,[asset]:(balance-amount).toString()},reservedAtomic:{...reserved,[asset]:(BigInt(reserved[asset]||'0')+amount).toString()},updatedAt:FieldValue.serverTimestamp()},{merge:true});
-    tx.create(withdrawalRef,{uid,asset,amountAtomic,destination,network:network||null,chainId:chainId||null,testnet,status:'pending_review',createdAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()});
+    tx.create(withdrawalRef,{uid,asset,amountAtomic,destination,network:network||null,chainId:chainId||null,testnet,velocityDay,status:'pending_review',createdAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()});
     tx.create(ledger,{kind:'withdrawal_hold',asset,amountAtomic,referenceId:withdrawalRef.id,network:network||null,chainId:chainId||null,createdAt:FieldValue.serverTimestamp(),immutable:true});
     return withdrawalRef.id;
+  });
+}
+
+export async function settleCustodyWithdrawal({ withdrawalRef, event, actorUid = 'fireblocks-webhook' }) {
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(withdrawalRef);
+    if (!snap.exists) throw Object.assign(new Error('Withdrawal request not found.'), { statusCode: 404 });
+    const d = snap.data();
+    if (['completed', 'failed_released', 'cancelled'].includes(d.status)) return { idempotent: true, status: d.status };
+    if (!['submitted', 'broadcasting', 'confirming', 'approved_for_custody'].includes(d.status)) throw Object.assign(new Error('Withdrawal is not eligible for custody settlement.'), { statusCode: 409 });
+    if (d.asset !== event.asset || d.amountAtomic !== event.amountAtomic || String(d.destination).toLowerCase() !== event.address.toLowerCase()) throw Object.assign(new Error('Custody event does not match the withdrawal request.'), { statusCode: 409 });
+    const account = accountRef(d.uid);
+    const accountSnap = await tx.get(account);
+    const old = accountSnap.exists ? accountSnap.data() : {};
+    const available = { ...zeroBalances(), ...(old.availableAtomic || {}) };
+    const reserved = { ...zeroBalances(), ...(old.reservedAtomic || {}) };
+    const hold = BigInt(reserved[d.asset] || '0');
+    const amount = BigInt(d.amountAtomic);
+    if (hold < amount) throw Object.assign(new Error('Reserved balance is inconsistent; escalate to operations.'), { statusCode: 409 });
+    if (['failed', 'rejected', 'cancelled', 'blocked'].includes(event.status)) {
+      const release = userLedgerRef(d.uid).doc(`withdrawal_release_${withdrawalRef.id}`);
+      tx.set(account, { availableAtomic: { ...available, [d.asset]: (BigInt(available[d.asset] || '0') + amount).toString() }, reservedAtomic: { ...reserved, [d.asset]: (hold - amount).toString() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      tx.create(release, { kind: 'withdrawal_release', asset: d.asset, amountAtomic: d.amountAtomic, referenceId: withdrawalRef.id, providerTransactionId: event.providerTransactionId, createdAt: FieldValue.serverTimestamp(), immutable: true });
+      tx.update(withdrawalRef, { status: 'failed_released', custodyStatus: event.status, updatedAt: FieldValue.serverTimestamp() });
+      tx.create(db.collection('auditLogs').doc(), { actorUid, action: 'withdrawal.custody_failed_released', resourceId: withdrawalRef.id, providerTransactionId: event.providerTransactionId, createdAt: FieldValue.serverTimestamp() });
+      return { idempotent: false, status: 'failed_released' };
+    }
+    const debit = userLedgerRef(d.uid).doc(`withdrawal_debit_${withdrawalRef.id}`);
+    const debitSnap = await tx.get(debit);
+    if (!debitSnap.exists) tx.create(debit, { kind: 'withdrawal_debit', asset: d.asset, amountAtomic: d.amountAtomic, referenceId: withdrawalRef.id, txHash: event.txHash, providerTransactionId: event.providerTransactionId, createdAt: FieldValue.serverTimestamp(), immutable: true });
+    tx.set(account, { reservedAtomic: { ...reserved, [d.asset]: (hold - amount).toString() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    tx.update(withdrawalRef, { status: 'completed', custodyStatus: event.status, txHash: event.txHash, providerTransactionId: event.providerTransactionId, completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    tx.create(db.collection('auditLogs').doc(), { actorUid, action: 'withdrawal.custody_completed', resourceId: withdrawalRef.id, providerTransactionId: event.providerTransactionId, txHash: event.txHash, createdAt: FieldValue.serverTimestamp() });
+    return { idempotent: false, status: 'completed' };
   });
 }
 
@@ -243,3 +277,4 @@ export async function executeTrade({ uid, sellAsset, sellAmountAtomic, buyAsset,
     return { uid, tradeId, sellAsset, sellAmountAtomic, buyAsset, buyAmountAtomic };
   });
 }
+  

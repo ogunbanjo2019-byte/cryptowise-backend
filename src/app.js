@@ -10,6 +10,8 @@ import tradeRoutes from './routes/trade.js';
 import paymentRoutes from './routes/payment.js'; // 1. Import payment routes
 import { DEPOSIT_AUTOMATIC_CREDIT_READY, DEPOSIT_CHAIN_VERIFICATION_READY, DEPOSIT_CUSTOMER_INTAKE_READY } from './services/deposit-readiness.js';
 import { bybitStatus } from './services/bybit.js';
+import custodyWebhookRoutes from './routes/custody-webhooks.js';
+import { custodyStatus } from './services/custody.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -25,13 +27,19 @@ app.use(cors({
   allowedHeaders: ['Authorization','Content-Type','X-Firebase-AppCheck','Idempotency-Key'],
   maxAge: 600,
 }));
-app.use(express.json({ limit: '32kb', strict: true }));
+app.use(express.json({
+  limit: '32kb',
+  strict: true,
+  verify(req, _res, buffer) {
+    if (req.path === '/v1/webhooks/custody') req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
 
 const fundsEnabled = () => config.liveFundsEnabled && DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY && DEPOSIT_AUTOMATIC_CREDIT_READY;
 const liveTradingEnabled = () => config.tradingEnabled && bybitStatus().enabled && Boolean(config.BYBIT_OPERATOR_UID);
 
-app.get('/health', (_req,res)=>res.status(200).json({ status:'ok', service:'cryptowise-api', mode: config.CHAIN_MODE, fundsEnabled: fundsEnabled(), liveFundsFlag:config.liveFundsEnabled, tradingEnabled: liveTradingEnabled() }));
+app.get('/health', (_req,res)=>res.status(200).json({ status:'ok', service:'cryptowise-api', mode: config.CHAIN_MODE, fundsEnabled: fundsEnabled(), liveFundsFlag:config.liveFundsEnabled, tradingEnabled: liveTradingEnabled(), custody: custodyStatus() }));
 
 // --- Added Deposit & Receiving Address Endpoints ---
 
@@ -41,9 +49,11 @@ app.get('/v1/deposit/status', (req, res) => {
   res.json({
     status: 'online',
     fundsEnabled: enabled,
+    custody: custodyStatus(),
     message: enabled ? 'Deposit intake is enabled.' : 'Crypto deposits are paused. Do not send funds; live verification and crediting are not approved.'
   });
 });
+app.use('/v1/webhooks', custodyWebhookRoutes);
 
 app.use('/v1', accountRoutes);
 app.use('/v1/admin', adminRoutes);

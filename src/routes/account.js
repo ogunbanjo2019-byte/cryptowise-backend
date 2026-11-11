@@ -19,6 +19,8 @@ import {
   DEPOSIT_CUSTOMER_INTAKE_READY,
   WITHDRAWAL_CUSTODY_READY,
 } from '../services/deposit-readiness.js';
+import { getDepositAddress, custodyStatus } from '../services/custody.js';
+import { enforceWithdrawalPolicy } from '../services/withdrawal-controls.js';
 import {
   demoAccountRef,
   initialDemoBalances,
@@ -162,6 +164,17 @@ router.get('/wallet', requireUser, async (req, res, next) => {
 router.get('/deposit-instructions', requireUser, async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
+    if (config.custodyEnabled) {
+      const assets = [];
+      for (const asset of ['ETH', 'USDT']) {
+        const address = await getDepositAddress({ uid: req.user.uid, asset, network: NETWORK });
+        if (validEvmAddress(address?.address)) {
+          assets.push({ asset, address: address.address, ...(asset === 'USDT' && config.USDT_TOKEN_CONTRACT ? { tokenContract: config.USDT_TOKEN_CONTRACT } : {}) });
+        }
+      }
+      const enabled = config.liveFundsEnabled && DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY && DEPOSIT_AUTOMATIC_CREDIT_READY && assets.length === 2;
+      return res.json({ enabled, testnet: config.CHAIN_MODE !== 'mainnet', custody: custodyStatus(), network: NETWORK, chainId: config.ETH_CHAIN_ID, notice: enabled ? 'Only use the active address shown here and the exact network.' : 'MPC custody is configured but deposits remain paused pending independent verification and operational approval.', assets: enabled ? assets : [] });
+    }
     if (config.depositTestnetIntakeEnabled) {
       const assigned = await getOrCreateDepositAddress(req.user.uid);
       const assets = [{ asset: 'ETH', address: assigned.address }];
@@ -323,6 +336,7 @@ router.post('/withdrawal-requests', requireUser, async (req, res, next) => {
     }
 
     const ref = db.collection('withdrawalRequests').doc();
+    const policy = await enforceWithdrawalPolicy({ uid: req.user.uid, asset, amountAtomic, destination, network });
 
     await reserveWithdrawal({
       uid: req.user.uid,
@@ -333,6 +347,7 @@ router.post('/withdrawal-requests', requireUser, async (req, res, next) => {
       network,
       chainId: config.ETH_CHAIN_ID,
       testnet: testnetQueue,
+      velocityDay: policy.velocityDay,
     });
 
     res.status(201).json({

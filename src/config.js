@@ -32,6 +32,32 @@ const schema = z.object({
   BYBIT_CATEGORY: z.enum(['spot']).default('spot'),
   BYBIT_SYMBOL: z.string().regex(/^[A-Z0-9]{5,20}$/).default('ETHUSDT'),
   BYBIT_OPERATOR_UID: z.string().default(''),
+  CUSTODY_PROVIDER: z.enum(['disabled','fireblocks','bitgo','gateway']).default('disabled'),
+  CUSTODY_ENABLED: z.enum(['true','false']).default('false'),
+  CUSTODY_API_URL: z.string().url().optional(),
+  CUSTODY_API_TOKEN: z.string().default(''),
+  CUSTODY_WEBHOOK_SECRET: z.string().default(''),
+  CUSTODY_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(10000),
+  CUSTODY_WITHDRAWALS_ENABLED: z.enum(['true','false']).default('false'),
+  FIREBLOCKS_API_BASE_URL: z.string().url().default('https://sandbox-api.fireblocks.io/v1'),
+  FIREBLOCKS_API_KEY: z.string().default(''),
+  FIREBLOCKS_SECRET_KEY: z.string().default(''),
+  FIREBLOCKS_JWKS_URL: z.string().url().default('https://keys.fireblocks.io/.well-known/jwks.json'),
+  FIREBLOCKS_SOURCE_VAULT_ACCOUNT_ID: z.string().default(''),
+  FIREBLOCKS_DEPOSIT_VAULT_ACCOUNT_ID: z.string().default(''),
+  FIREBLOCKS_ETH_ASSET_ID: z.string().default('ETH_TEST5'),
+  FIREBLOCKS_USDT_ASSET_ID: z.string().default('USDT_TEST'),
+  WITHDRAWAL_MAX_ETH_ATOMIC: z.string().regex(/^[1-9][0-9]{0,77}$/).default('1000000000000000000'),
+  WITHDRAWAL_MAX_USDT_ATOMIC: z.string().regex(/^[1-9][0-9]{0,77}$/).default('1000000000'),
+  WITHDRAWAL_DAILY_LIMIT_ETH_ATOMIC: z.string().regex(/^[1-9][0-9]{0,77}$/).default('5000000000000000000'),
+  WITHDRAWAL_DAILY_LIMIT_USDT_ATOMIC: z.string().regex(/^[1-9][0-9]{0,77}$/).default('5000000000'),
+  SCREENING_API_URL: z.string().url().optional(),
+  SCREENING_API_TOKEN: z.string().default(''),
+  ALERT_WEBHOOK_URL: z.string().url().optional(),
+  ALERT_WEBHOOK_TOKEN: z.string().default(''),
+  RECOVERY_MODE: z.enum(['normal','freeze_withdrawals']).default('normal'),
+  CUSTODY_RECONCILIATION_ENABLED: z.enum(['true','false']).default('false'),
+  CUSTODY_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().min(10000).max(3600000).default(60000),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -53,6 +79,10 @@ export const config = {
   depositTestnetIntakeEnabled: parsed.data.DEPOSIT_TESTNET_INTAKE_ENABLED === 'true',
   depositTestnetAutoCreditEnabled: parsed.data.DEPOSIT_TESTNET_AUTO_CREDIT_ENABLED === 'true',
   withdrawalsTestnetQueueEnabled: parsed.data.WITHDRAWALS_TESTNET_QUEUE_ENABLED === 'true',
+  custodyProvider: parsed.data.CUSTODY_PROVIDER,
+  custodyEnabled: parsed.data.CUSTODY_ENABLED === 'true',
+  custodyWithdrawalsEnabled: parsed.data.CUSTODY_WITHDRAWALS_ENABLED === 'true',
+  custodyReconciliationEnabled: parsed.data.CUSTODY_RECONCILIATION_ENABLED === 'true',
 };
 
 if (config.CHAIN_MODE === 'mainnet' && config.ETH_CHAIN_ID !== 1) {
@@ -89,4 +119,16 @@ if (config.liveFundsEnabled && config.CHAIN_MODE !== 'mainnet') {
 
 if (config.liveFundsEnabled && (![config.ETH_DEPOSIT_ADDRESS, config.USDT_DEPOSIT_ADDRESS].every(a => /^0x[a-fA-F0-9]{40}$/.test(a)))) {
   throw new Error('Live funds require both validated public Ethereum receiving addresses. Do not provide private keys.');
+}
+if (config.custodyEnabled && (!config.CUSTODY_API_URL || !config.CUSTODY_API_TOKEN || config.custodyProvider === 'disabled')) {
+  throw new Error('CUSTODY_ENABLED requires a supported provider, CUSTODY_API_URL, and server-side CUSTODY_API_TOKEN.');
+}
+if (config.custodyWithdrawalsEnabled && (!config.custodyEnabled || (config.custodyProvider === 'fireblocks' ? !config.FIREBLOCKS_JWKS_URL : !config.CUSTODY_WEBHOOK_SECRET))) {
+  throw new Error('Custody withdrawals require custody and webhook configuration.');
+}
+if (config.custodyProvider === 'fireblocks' && config.custodyEnabled && (!config.FIREBLOCKS_API_KEY || !config.FIREBLOCKS_SECRET_KEY || !config.FIREBLOCKS_SOURCE_VAULT_ACCOUNT_ID)) {
+  throw new Error('Fireblocks custody requires FIREBLOCKS_API_KEY, FIREBLOCKS_SECRET_KEY, and FIREBLOCKS_SOURCE_VAULT_ACCOUNT_ID.');
+}
+if (config.RECOVERY_MODE === 'freeze_withdrawals' && config.custodyWithdrawalsEnabled) {
+  console.warn('RECOVERY_MODE=freeze_withdrawals: custody withdrawal submission is frozen.');
 }

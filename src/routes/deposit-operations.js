@@ -7,6 +7,7 @@ import {
   DEPOSIT_CHAIN_VERIFICATION_READY,
   DEPOSIT_CUSTOMER_INTAKE_READY,
 } from '../services/deposit-readiness.js';
+import { custodyStatus } from '../services/custody.js';
 
 const router = Router();
 const ACTIVE_QUEUE_STATUSES = new Set([
@@ -65,6 +66,7 @@ router.get('/', requireRole('owner', 'admin', 'finance', 'compliance'), async (_
     res.json({
       asOf: new Date(now).toISOString(),
       liveFundsFlag: config.liveFundsEnabled,
+      custody: custodyStatus(),
       customerDepositsEnabled: config.liveFundsEnabled && DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY && DEPOSIT_AUTOMATIC_CREDIT_READY,
       automaticCreditingEnabled: DEPOSIT_AUTOMATIC_CREDIT_READY,
       chainMonitor: {
@@ -90,6 +92,7 @@ router.get('/', requireRole('owner', 'admin', 'finance', 'compliance'), async (_
         { key: 'automatic_crediting', label: 'Duplicate-safe verified crediting', status: DEPOSIT_AUTOMATIC_CREDIT_READY ? 'ready' : 'blocked' },
         { key: 'chain_reconciliation', label: 'On-chain reconciliation', status: 'blocked' },
         { key: 'backup_restore', label: 'Backup and restore verification', status: 'not_reported' },
+        { key: 'mpc_custody_webhooks', label: 'MPC custody webhook verification', status: custodyStatus().webhookConfigured ? 'configured' : 'blocked' },
       ],
       requests,
       notice: 'This is an operational visibility endpoint, not a chain verifier. No request shown here is independently confirmed on Ethereum; do not credit funds from this view.',
