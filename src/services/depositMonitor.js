@@ -95,8 +95,8 @@ async function scanPendingDepositRequests() {
 }
 
 export async function startDepositMonitor() {
-  if (!config.depositMonitorEnabled) {
-    console.log('Deposit monitor disabled: set DEPOSIT_MONITOR_ENABLED=true only after reviewing chain settings.');
+  if (!config.depositMonitorEnabled || config.CHAIN_MODE !== 'testnet' || !config.depositTestnetIntakeEnabled) {
+    console.log('Deposit monitor disabled: only explicitly configured Sepolia testnet intake is supported by this monitor.');
     return;
   }
   if (![1, 11155111].includes(config.ETH_CHAIN_ID)) {

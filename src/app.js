@@ -9,6 +9,7 @@ import adminRoutes from './routes/admin.js';
 import tradeRoutes from './routes/trade.js';
 import paymentRoutes from './routes/payment.js'; // 1. Import payment routes
 import { DEPOSIT_AUTOMATIC_CREDIT_READY, DEPOSIT_CHAIN_VERIFICATION_READY, DEPOSIT_CUSTOMER_INTAKE_READY } from './services/deposit-readiness.js';
+import { bybitStatus } from './services/bybit.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -27,42 +28,22 @@ app.use(cors({
 app.use(express.json({ limit: '32kb', strict: true }));
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
 
-app.get('/health', (_req,res)=>res.status(200).json({ status:'ok', service:'cryptowise-api', mode: config.CHAIN_MODE, fundsEnabled: config.liveFundsEnabled&&DEPOSIT_CUSTOMER_INTAKE_READY&&DEPOSIT_CHAIN_VERIFICATION_READY&&DEPOSIT_AUTOMATIC_CREDIT_READY, liveFundsFlag:config.liveFundsEnabled, tradingEnabled: config.tradingEnabled }));
+const fundsEnabled = () => config.liveFundsEnabled && DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY && DEPOSIT_AUTOMATIC_CREDIT_READY;
+const liveTradingEnabled = () => config.tradingEnabled && bybitStatus().enabled && Boolean(config.BYBIT_OPERATOR_UID);
+
+app.get('/health', (_req,res)=>res.status(200).json({ status:'ok', service:'cryptowise-api', mode: config.CHAIN_MODE, fundsEnabled: fundsEnabled(), liveFundsFlag:config.liveFundsEnabled, tradingEnabled: liveTradingEnabled() }));
 
 // --- Added Deposit & Receiving Address Endpoints ---
 
 // Get backend deposit status and readiness
 app.get('/v1/deposit/status', (req, res) => {
+  const enabled = fundsEnabled();
   res.json({
     status: 'online',
-    fundsEnabled: config.liveFundsEnabled && DEPOSIT_CUSTOMER_INTAKE_READY && DEPOSIT_CHAIN_VERIFICATION_READY && DEPOSIT_AUTOMATIC_CREDIT_READY,
-    message: 'Deposit system monitor active'
+    fundsEnabled: enabled,
+    message: enabled ? 'Deposit intake is enabled.' : 'Crypto deposits are paused. Do not send funds; live verification and crediting are not approved.'
   });
 });
-
-// Get active receiving deposit address based on asset query (e.g. ?asset=ETH or USDT)
-app.get('/v1/deposit/address', async (req, res) => {
-  try {
-    const asset = req.query.asset || 'ETH';
-
-    // Return active deposit wallet parameters for your dashboard UI
-    res.json({
-      status: 'active',
-      asset: asset,
-      address: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', // Replace or wire up with your dynamic wallet generator / Bybit API call
-      network: asset.includes('USDT') ? 'TRON (TRC20) / Ethereum (ERC20)' : 'Ethereum (ERC20)',
-      minDeposit: '100.00',
-      message: 'System online - Ready for deposits'
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to retrieve receiving address'
-    });
-  }
-});
-
-// --------------------------------------------------
 
 app.use('/v1', accountRoutes);
 app.use('/v1/admin', adminRoutes);
