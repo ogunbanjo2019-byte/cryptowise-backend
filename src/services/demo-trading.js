@@ -90,6 +90,8 @@ export async function executeDemoTrade({
       .doc(`demo_trade_${tradeId}`);
     const notificationRef = db.collection('users').doc(uid)
       .collection('notifications').doc(`demo_trade_${tradeId}`);
+    const processingNotificationRef = db.collection('users').doc(uid)
+      .collection('notifications').doc(`demo_trade_${tradeId}_processing`);
 
     const ledgerSnap = await tx.get(ledgerRef);
     const notificationSnap = await tx.get(notificationRef);
@@ -132,8 +134,18 @@ export async function executeDemoTrade({
       immutable: true,
     });
 
+    tx.create(processingNotificationRef, {
+      type: 'demo_trade_processing',
+      status: 'processing',
+      title: 'Reading your demo order',
+      message: `${side === 'buy' ? 'Buy' : 'Sell'} ETH/USDT practice order is being read and matched against the simulated market. No real assets are being moved.`,
+      createdAt: FieldValue.serverTimestamp(),
+      readAt: null,
+      referenceId: tradeId,
+    });
     tx.create(notificationRef, {
       type: 'demo_trade_filled',
+      status: 'completed',
       title: 'Demo order completed',
       message: `${side === 'buy' ? 'Buy' : 'Sell'} ETH/USDT practice order for ${String(amountUsd)} USDT filled at the simulated price of ${DEMO_PRICES.ETH_USDT} USDT per ETH. No real assets were traded.`,
       createdAt: FieldValue.serverTimestamp(),
