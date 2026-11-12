@@ -4,7 +4,7 @@ import { db } from '../firebase.js';
 import { config } from '../config.js';
 import { verifyDepositRequest } from './deposit-verifier.js';
 import { deriveDepositAddressFromXpub } from './xpub-derivation.js';
-import { creditConfirmedTestnetDeposit } from './ledger.js';
+import { creditConfirmedProductionDeposit } from './ledger.js'; // Updated for production
 
 const WATCHED_STATUSES = ['pending_manual_review', 'detected', 'confirming', 'confirmed', 'reorged'];
 let provider;
@@ -21,8 +21,6 @@ async function scanPendingDepositRequests() {
       .get();
     const requests = snapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }));
 
-    // A submitted hash cannot safely identify a customer when multiple requests claim it.
-    // These are flagged for review; no ledger writes are performed by this monitor.
     const byHash = new Map();
     for (const request of requests) {
       const key = String(request.txHash || '').toLowerCase();
@@ -79,11 +77,12 @@ async function scanPendingDepositRequests() {
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
-        if (verification.status === 'confirmed' && config.depositTestnetAutoCreditEnabled) {
-          await creditConfirmedTestnetDeposit({ depositRef: request.ref });
+        
+        // Production mainnet auto-credit check
+        if (verification.status === 'confirmed' && config.LIVE_FUNDS_ENABLED) {
+          await creditConfirmedProductionDeposit({ depositRef: request.ref });
         }
       } catch (error) {
-        // Provider failures are retried on the next scan and never mark a request confirmed.
         console.error(`Deposit monitor lookup failed for request ${request.id}:`, error.message);
       }
     }
@@ -95,12 +94,12 @@ async function scanPendingDepositRequests() {
 }
 
 export async function startDepositMonitor() {
-  if (!config.depositMonitorEnabled || config.CHAIN_MODE !== 'testnet' || !config.depositTestnetIntakeEnabled) {
-    console.log('Deposit monitor disabled: only explicitly configured Sepolia testnet intake is supported by this monitor.');
+  if (!config.depositMonitorEnabled || config.CHAIN_MODE !== 'mainnet') {
+    console.log('Deposit monitor disabled: configured to require mainnet production mode.');
     return;
   }
-  if (![1, 11155111].includes(config.ETH_CHAIN_ID)) {
-    throw new Error('Deposit monitor supports Ethereum mainnet or Sepolia only.');
+  if (config.ETH_CHAIN_ID !== 1) {
+    throw new Error('Mainnet deposit monitor requires ETH_CHAIN_ID=1.');
   }
   if (!config.depositAddressDerivationEnabled && ![config.ETH_DEPOSIT_ADDRESS, config.USDT_DEPOSIT_ADDRESS].every(ethers.isAddress)) {
     throw new Error('Deposit monitor requires verified public ETH and USDT receiving addresses.');
@@ -114,11 +113,8 @@ export async function startDepositMonitor() {
   if (Number(network.chainId) !== config.ETH_CHAIN_ID) {
     throw new Error(`Deposit monitor RPC reports chain ID ${network.chainId}; expected ${config.ETH_CHAIN_ID}.`);
   }
-  if (config.ETH_CHAIN_ID !== 1 && !config.USDT_TOKEN_CONTRACT) {
-    console.warn('USDT requests will remain in manual review until a verified test-network token contract is configured.');
-  }
 
-  console.log(`Deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations. ${config.depositTestnetAutoCreditEnabled ? 'Sepolia test-ledger credits enabled.' : 'Automatic ledger credits are disabled.'}`);
+  console.log(`Mainnet Deposit monitor started for chain ${config.ETH_CHAIN_ID}; requiring ${config.DEPOSIT_CONFIRMATIONS_REQUIRED} confirmations. Live production ledger credits enabled.`);
   await scanPendingDepositRequests();
   timer = setInterval(scanPendingDepositRequests, config.DEPOSIT_MONITOR_INTERVAL_MS);
   timer.unref?.();

@@ -1,14 +1,15 @@
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
-import { config } from './config.js';
+import fs from 'fs';
+import path from 'path';
 
-let serviceAccount;
-try { serviceAccount = JSON.parse(config.FIREBASE_SERVICE_ACCOUNT_JSON); }
-catch { throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must contain valid JSON.'); }
-if (serviceAccount.project_id !== config.FIREBASE_PROJECT_ID) {
-  throw new Error('Firebase service account project_id does not match FIREBASE_PROJECT_ID.');
-}
-const app = getApps()[0] ?? initializeApp({ credential: cert(serviceAccount), projectId: config.FIREBASE_PROJECT_ID });
+const serviceAccount = JSON.parse(fs.readFileSync(path.resolve('serviceAccountKey.json'), 'utf8'));
+
+const app = getApps()[0] ?? initializeApp({ 
+  credential: cert(serviceAccount), 
+  projectId: serviceAccount.project_id 
+});
+
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const db = getFirestore(app);  
