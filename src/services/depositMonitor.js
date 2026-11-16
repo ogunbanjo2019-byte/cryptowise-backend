@@ -4,7 +4,7 @@ import { db } from '../firebase.js';
 import { config } from '../config.js';
 import { verifyDepositRequest } from './deposit-verifier.js';
 import { deriveDepositAddressFromXpub } from './xpub-derivation.js';
-import { creditConfirmedProductionDeposit } from './ledger.js'; // Updated for production
+import { creditConfirmedProductionDeposit } from './ledger.js';
 
 const WATCHED_STATUSES = ['pending_manual_review', 'detected', 'confirming', 'confirmed', 'reorged'];
 let provider;
@@ -21,19 +21,24 @@ async function scanPendingDepositRequests() {
       .get();
     const requests = snapshot.docs.map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }));
 
-    const byHash = new Map();
+    // FIX: Group by unique transaction + log index to support multi-transfer transactions securely
+    const byEventKey = new Map();
     for (const request of requests) {
-      const key = String(request.txHash || '').toLowerCase();
-      if (!key) continue;
-      byHash.set(key, [...(byHash.get(key) || []), request]);
+      const txHash = String(request.txHash || '').toLowerCase();
+      if (!txHash) continue;
+      
+      const logIndex = request.logIndex !== undefined ? Number(request.logIndex) : 0;
+      const eventKey = `${txHash}_${logIndex}`;
+      
+      byEventKey.set(eventKey, [...(byEventKey.get(eventKey) || []), request]);
     }
 
-    for (const group of byHash.values()) {
+    for (const group of byEventKey.values()) {
       if (group.length > 1) {
         for (const request of group) {
           await request.ref.update({
             status: 'manual_review',
-            statusReason: 'Transaction hash is claimed by more than one deposit request.',
+            statusReason: 'Transaction hash and log index are claimed by more than one deposit request.',
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
@@ -62,6 +67,7 @@ async function scanPendingDepositRequests() {
             continue;
           }
         }
+
         const verification = await verifyDepositRequest(request, provider, config);
         const current = String(request.status || '');
         if (current !== verification.status || current === 'confirming') {
@@ -78,8 +84,11 @@ async function scanPendingDepositRequests() {
           });
         }
         
-        // Production mainnet auto-credit check
+        // Production mainnet auto-credit check with fail-closed readiness validation
         if (verification.status === 'confirmed' && config.LIVE_FUNDS_ENABLED) {
+          if (!config.depositMonitorEnabled) {
+            throw new Error('Attempted to credit production deposit while monitor is disabled.');
+          }
           await creditConfirmedProductionDeposit({ depositRef: request.ref });
         }
       } catch (error) {

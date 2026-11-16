@@ -49,30 +49,51 @@ export async function verifyDepositRequest(request, chainProvider, settings) {
   }
 
   let observedAmountAtomic = 0n;
+
   if (asset === 'ETH') {
     if (!transaction.to || transaction.to.toLowerCase() !== recipient.toLowerCase() || BigInt(transaction.value || 0) <= 0n) {
       return result('manual_review', { confirmations: 0, reason: 'Native ETH transfer recipient or amount does not match.' });
     }
     observedAmountAtomic = BigInt(transaction.value);
   } else {
+    // USDT Token Verification
     const token = settings.USDT_TOKEN_CONTRACT || (settings.ETH_CHAIN_ID === 1 ? OFFICIAL_MAINNET_USDT : '');
     if (!ethers.isAddress(token)) {
       return result('manual_review', { confirmations: 0, reason: 'USDT token contract is not configured for this network.' });
     }
+
+    // Require strict logIndex binding for USDT to prevent multi-transfer ambiguity
+    const expectedLogIndex = request.logIndex !== undefined && request.logIndex !== null 
+      ? Number(request.logIndex) 
+      : null;
+
+    if (expectedLogIndex === null) {
+      return result('manual_review', { confirmations: 0, reason: 'Deposit request missing required logIndex for strict USDT event binding.' });
+    }
+
+    let matchedLogFound = false;
+
     for (const log of receipt.logs || []) {
       if (log.address.toLowerCase() !== token.toLowerCase()) continue;
       if (log.blockHash && log.blockHash.toLowerCase() !== receipt.blockHash?.toLowerCase()) continue;
+      
+      // Strict check: Bind to the exact log index recorded for this deposit request
+      if (log.index !== expectedLogIndex) continue;
+
       try {
         const parsed = transferInterface.parseLog(log);
         if (parsed?.name === 'Transfer' && parsed.args.to.toLowerCase() === recipient.toLowerCase()) {
-          observedAmountAtomic += BigInt(parsed.args.value);
+          observedAmountAtomic = BigInt(parsed.args.value);
+          matchedLogFound = true;
+          break; // Stop once the exact bound log is successfully verified
         }
       } catch {
-        // Ignore unrelated or malformed logs; only the configured token's Transfer event counts.
+        // Ignore unrelated logs
       }
     }
-    if (observedAmountAtomic <= 0n) {
-      return result('manual_review', { confirmations: 0, reason: 'No positive transfer to the configured address from the configured USDT contract.' });
+
+    if (!matchedLogFound || observedAmountAtomic <= 0n) {
+      return result('manual_review', { confirmations: 0, reason: 'No matching USDT Transfer log found at the specified logIndex for the recipient address.' });
     }
   }
 
