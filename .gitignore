@@ -6,3 +6,4 @@ node_modules/
 service-account*.json
 firebase-adminsdk*.json
 .DS_Store
+src/serviceAccountKey.json
