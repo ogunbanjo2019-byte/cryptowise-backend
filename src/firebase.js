@@ -12,9 +12,12 @@ try {
   // Parse the JSON string configuration
   serviceAccount = JSON.parse(config.FIREBASE_SERVICE_ACCOUNT_JSON);
 
-  // Convert literal string newlines into true newline control characters for Node/OpenSSL
+  // Clean up escaped newlines, carriage returns, and stray whitespace for Node v24 / OpenSSL 3
   if (serviceAccount.private_key) {
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    serviceAccount.private_key = serviceAccount.private_key
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '')
+      .trim();
   }
 } catch (error) {
   throw new Error('Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: ' + error.message);

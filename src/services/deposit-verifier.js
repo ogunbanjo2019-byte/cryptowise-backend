@@ -117,4 +117,4 @@ export async function verifyDepositRequest(request, chainProvider, settings) {
     chainId: settings.ETH_CHAIN_ID,
     reason: null,
   });
-}
+}   
